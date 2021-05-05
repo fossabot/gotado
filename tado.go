@@ -1,7 +1,9 @@
 package gotado
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -109,10 +111,10 @@ type ZoneState struct {
 	GeolocationOverride bool   `json:"geolocationOverride"`
 	// TODO missing geolocationOverrideDisableTime
 	// TODO missing preparation
-	Setting ZoneStateSetting `json:"setting"`
-	// TODO missing overlayType
-	// TODO missing overlay
-	OpenWindow *ZoneStateOpenWindow `json:"openWindow"`
+	Setting     ZoneStateSetting     `json:"setting"`
+	OverlayType *string              `json:"overlayType"`
+	Overlay     *ZoneOverlay         `json:"overlay"`
+	OpenWindow  *ZoneStateOpenWindow `json:"openWindow"`
 	// TODO missing nextScheduleChange
 	// TODO missing nextTimeBlock
 	Link ZoneStateLink `json:"link"`
@@ -131,6 +133,36 @@ type ZoneStateSetting struct {
 type ZoneStateSettingTemperature struct {
 	Celsius    float64 `json:"celsius"`
 	Fahrenheit float64 `json:"fahrenheit"`
+}
+
+// ZoneOverlay holds overlay information of a zone
+type ZoneOverlay struct {
+	Type        string                 `json:"type,omitempty"`
+	Setting     ZoneOverlaySetting     `json:"setting"`
+	Termination ZoneOverlayTermination `json:"termination,omitempty"`
+}
+
+// ZoneOverlaySetting holds the setting of a zone overlay
+type ZoneOverlaySetting struct {
+	Type        string                         `json:"type"`
+	Power       string                         `json:"power"`
+	Temperature *ZoneOverlaySettingTemperature `json:"temperature"`
+}
+
+// ZoneOverlaySettingTemperature holds the temperature of a zone state setting
+type ZoneOverlaySettingTemperature struct {
+	Celsius    float64 `json:"celsius"`
+	Fahrenheit float64 `json:"fahrenheit"`
+}
+
+// ZoneOverlayTermination holdes the termination information of a zone overlay
+type ZoneOverlayTermination struct {
+	Type                   string  `json:"type"`
+	TypeSkillBasedApp      string  `json:"typeSkillBasedApp"`
+	DurationInSeconds      int32   `json:"durationInSeconds,omitempty"`
+	Expiry                 string  `json:"expiry,omitempty"`
+	RemainingTimeInSeconds int32   `json:"remainingTimeInSeconds,omitempty"`
+	ProjectedExpiry        *string `json:"projectedExpiry"`
 }
 
 // ZoneStateOpenWindow holds the information about an open window of a zone state
@@ -265,6 +297,73 @@ func GetZoneState(client *Client, userHome *UserHome, zone *Zone) (*ZoneState, e
 	}
 
 	return zoneState, nil
+}
+
+// setZoneOverlay sets a zone overlay setting
+func setZoneOverlay(client *Client, userHome *UserHome, zone *Zone, overlay ZoneOverlay) (*ZoneOverlay, error) {
+	data, err := json.Marshal(overlay)
+	if err != nil {
+		return nil, fmt.Errorf("unable to marshal zone overlay: %w", err)
+	}
+	resp, err := client.Request(http.MethodPut, apiURL("homes/%d/zones/%d/overlay", userHome.ID, zone.ID), bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := isError(resp); err != nil {
+		return nil, fmt.Errorf("tado° API error: %w", err)
+	}
+
+	respOverlay := &ZoneOverlay{}
+	if err := json.NewDecoder(resp.Body).Decode(&respOverlay); err != nil {
+		return nil, fmt.Errorf("unable to decode tado° API response: %w", err)
+	}
+
+	return respOverlay, nil
+}
+
+// SetZoneOverlayHeatingOff turns off heating in a zone
+func SetZoneOverlayHeatingOff(client *Client, userHome *UserHome, zone *Zone) error {
+	setOverlay := ZoneOverlay{
+		Setting: ZoneOverlaySetting{
+			Type:  "HEATING",
+			Power: "OFF",
+		},
+	}
+	overlay, err := setZoneOverlay(client, userHome, zone, setOverlay)
+	if err != nil {
+		return err
+	}
+
+	if overlay.Type != "MANUAL" || overlay.Setting.Power != "OFF" {
+		return errors.New("unable to turn heating off")
+	}
+
+	return nil
+}
+
+// SetZoneOverlayHeatingOn turns on heating in a zone.
+func SetZoneOverlayHeatingOn(client *Client, userHome *UserHome, zone *Zone, temperatureCelsius float64, temperatureFahrenheit float64) error {
+	setOverlay := ZoneOverlay{
+		Setting: ZoneOverlaySetting{
+			Type:  "HEATING",
+			Power: "ON",
+			Temperature: &ZoneOverlaySettingTemperature{
+				Celsius:    temperatureCelsius,
+				Fahrenheit: temperatureFahrenheit,
+			},
+		},
+	}
+	overlay, err := setZoneOverlay(client, userHome, zone, setOverlay)
+	if err != nil {
+		return err
+	}
+
+	if overlay.Type != "MANUAL" || overlay.Setting.Power != "ON" {
+		return errors.New("unable to turn heating on")
+	}
+
+	return nil
 }
 
 // SetWindowOpen marks the window in a zone as open (open window must have been detected before)
